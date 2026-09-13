@@ -15,77 +15,55 @@ body {
 
 .chapter-container {
   max-width: 100%;
+  padding: 1em 0;
 }
 
-/* Simple chapter header */
+.chapter-container + .chapter-container {
+  page-break-before: always;
+  break-before: page;
+}
+
 .chapter-header {
   text-align: center;
   margin-bottom: 2em;
   page-break-after: avoid;
+  break-after: avoid;
 }
 
 .chapter-header h1 {
   font-size: 1.5em;
   margin: 0;
-  color: #333;
 }
 
 .chapter-header h2 {
   font-size: 1.2em;
-  margin: 0.5em 0 0 0;
-  color: #666;
+  margin: 0.5em 0 0;
   font-weight: normal;
 }
 
-/* Simple image */
-.chapter-image {
-  text-align: center;
-  margin: 2em 0;
-  page-break-inside: avoid;
-}
-
-.chapter-image img {
-  max-width: 90%;
-  max-height: 70vh;
-  height: auto;
-}
-
-.image-caption {
-  margin-top: 0.5em;
-  font-style: italic;
-  color: #666;
-  font-size: 0.9em;
-}
-
-/* No special styling for container */
 .verses-container {
-  /* Just contains the verses */
+  max-width: 100%;
 }
 
-/* Hebrew verse - simple */
 .hebrew-verse {
   direction: rtl;
   text-align: right;
   font-family: "NotoSerifHebrew", serif;
   font-size: 1.2em;
   line-height: 1.8;
-  color: #000;
   margin-bottom: 0.5em;
 }
 
-/* English verse - simple */
 .english-verse {
   direction: ltr;
   text-align: left;
   font-size: 1em;
   line-height: 1.7;
-  color: #333;
+  margin-bottom: 1em;
 }
 
-/* Minimal verse numbers */
 .verse-number {
   font-weight: normal;
-  color: #999;
   font-size: 0.85em;
   margin-right: 0.5em;
 }
@@ -95,11 +73,32 @@ body {
   margin-left: 0.5em;
 }
 
-/* Remove all page breaks except for chapters */
-.chapter-container {
-  page-break-before: always;
+.dedication {
+  margin: 30% auto;
+  text-align: center;
+  font-style: italic;
+  max-width: 80%;
 }
 
-.chapter-container:first-child {
-  page-break-before: auto;
+.dedication h2 {
+  font-size: 1.5em;
+  margin-bottom: 1em;
+  font-weight: normal;
+}
+
+.dedication p {
+  font-size: 1.1em;
+  line-height: 1.8;
+  margin: 0.5em 0;
+}
+
+.dedication .name {
+  font-size: 1.2em;
+  margin-top: 2em;
+  font-weight: bold;
+}
+
+.dedication .link {
+  font-size: 0.9em;
+  margin-top: 1em;
 }
