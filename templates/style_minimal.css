@@ -62,6 +62,32 @@ body {
   margin-bottom: 1em;
 }
 
+.rashi-commentary {
+  margin: 0.25em 0 1.25em;
+  padding: 0.6em 0.8em;
+  border-left: 2px solid #bbb;
+  font-size: 0.92em;
+  line-height: 1.6;
+}
+
+.rashi-label {
+  font-weight: bold;
+  font-size: 0.85em;
+  margin-bottom: 0.25em;
+}
+
+.rashi-hebrew {
+  direction: rtl;
+  text-align: right;
+  font-family: "NotoSerifHebrew", serif;
+  margin-bottom: 0.45em;
+}
+
+.rashi-english {
+  direction: ltr;
+  text-align: left;
+}
+
 .verse-number {
   font-weight: normal;
   font-size: 0.85em;
