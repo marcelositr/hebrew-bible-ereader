@@ -4,13 +4,22 @@ Tanakh EPUB Generator
 
 Generates a Hebrew/English Tanakh EPUB from Sefaria.
 The generated book is text-only except for the optional cover image.
+
+The output is deliberately reflowable and Kindle-friendly:
+- one XHTML content file per biblical book, keeping the full edition below
+  Amazon's 300-HTML-file limit;
+- Hebrew and English remain separately directional inside each chapter;
+- chapters are linked from the EPUB navigation/NCX;
+- only the cover image is embedded;
+- no interior artwork, illustration index, or attribution page is generated.
 """
 
 import argparse
+import html
 import re
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 import requests
 from ebooklib import epub
@@ -65,8 +74,6 @@ class TanakhGenerator:
             ("II_Chronicles", "דברי הימים ב", "Divrei_HaYamim_Bet", 36),
         ]
 
-        self.template_env = None
-
     def get_css(self) -> str:
         """Load the project's CSS, with a safe fallback."""
         css_path = Path("templates/style_minimal.css")
@@ -74,12 +81,33 @@ class TanakhGenerator:
             return css_path.read_text(encoding="utf-8")
 
         return """
+        @font-face {
+            font-family: "NotoSerifHebrew";
+            src: url("fonts/NotoSerifHebrew-Regular.ttf");
+        }
         body { font-family: Georgia, serif; line-height: 1.6; margin: 1em; }
-        .chapter-container { margin: 0 auto; padding: 1em; }
-        .chapter-header { margin-bottom: 1.5em; }
-        .hebrew-verse { direction: rtl; text-align: right; font-size: 1.3em; margin: 0.8em 0; }
-        .english-verse { direction: ltr; text-align: left; font-size: 1.1em; margin: 0.8em 0; }
-        .verse-number { font-weight: bold; font-size: 0.9em; margin: 0 0.3em; }
+        .chapter-container { margin: 0 auto; padding: 1em 0; }
+        .chapter-container + .chapter-container {
+            page-break-before: always;
+            break-before: page;
+        }
+        .chapter-header { margin-bottom: 1.5em; text-align: center; }
+        .hebrew-verse {
+            direction: rtl;
+            text-align: right;
+            font-family: "NotoSerifHebrew", serif;
+            font-size: 1.2em;
+            line-height: 1.8;
+            margin-bottom: 0.5em;
+        }
+        .english-verse {
+            direction: ltr;
+            text-align: left;
+            font-size: 1em;
+            line-height: 1.7;
+            margin-bottom: 1em;
+        }
+        .verse-number { font-size: 0.85em; margin: 0 0.5em; }
         """
 
     @staticmethod
@@ -124,70 +152,96 @@ class TanakhGenerator:
                     time.sleep(2)
         return {}
 
-    def create_chapter_responsive(
-        self,
-        book_name: str,
-        hebrew_name: str,
-        chapter_num: int,
-        chapter_count: int,
-    ) -> Optional[epub.EpubHtml]:
-        """Create one chapter containing Hebrew and English text only."""
-        print(f"  Chapter {chapter_num}/{chapter_count}")
-
-        data = self.fetch_text(book_name, chapter_num)
-        if not data or "he" not in data or "text" not in data:
-            return None
-
-        hebrew_verses = self._clean_verses(data["he"])
-        english_verses = self._clean_verses(data["text"])
-
-        chapter = epub.EpubHtml(
-            title=f"{book_name} {chapter_num}",
-            file_name=f"{book_name}_{chapter_num}.xhtml",
-            lang="he",
-        )
-
-        html = f"""<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="he">
-<head>
-    <meta charset="utf-8" />
-    <title>{book_name} {chapter_num}</title>
-    <link rel="stylesheet" type="text/css" href="style.css" />
-</head>
-<body>
-    <div class="chapter-container">
-        <div class="chapter-header">
-            <h1>{book_name} {chapter_num}</h1>
-            <h2>{hebrew_name} פרק {self.to_hebrew_numeral(chapter_num)}</h2>
-        </div>
-        <div class="verses-container">
-"""
-
+    @staticmethod
+    def _verse_html(hebrew_verses: list[str], english_verses: list[str]) -> str:
+        """Render paired Hebrew/English verses as safe XHTML fragments."""
+        parts = []
         max_verses = max(len(hebrew_verses), len(english_verses))
+
         for index in range(max_verses):
             verse_number = index + 1
             if index < len(hebrew_verses):
-                html += f"""
-            <div class="hebrew-verse">
-                <span class="verse-number">{verse_number}</span>{hebrew_verses[index]}
+                parts.append(
+                    f'''            <div class="hebrew-verse" dir="rtl">
+                <span class="verse-number">{verse_number}</span>{html.escape(hebrew_verses[index])}
             </div>
-"""
+'''
+                )
             if index < len(english_verses):
-                html += f"""
-            <div class="english-verse">
-                <span class="verse-number">{verse_number}</span>{english_verses[index]}
+                parts.append(
+                    f'''            <div class="english-verse" dir="ltr">
+                <span class="verse-number">{verse_number}</span>{html.escape(english_verses[index])}
             </div>
-"""
+'''
+                )
 
-        html += """
-        </div>
-    </div>
+        return "".join(parts)
+
+    def create_book_content(
+        self,
+        book_name: str,
+        hebrew_name: str,
+        chapter_count: int,
+        css: epub.EpubItem,
+        test_limit: int | None = None,
+    ) -> tuple[epub.EpubHtml, list[epub.Link]]:
+        """Create one XHTML file containing every chapter of one biblical book."""
+        filename = f"{book_name}.xhtml"
+        item = epub.EpubHtml(
+            title=f"{book_name} - {hebrew_name}",
+            file_name=filename,
+            lang="he",
+        )
+
+        limit = min(chapter_count, test_limit) if test_limit else chapter_count
+        chapter_links = []
+        sections = []
+
+        for chapter_num in range(1, limit + 1):
+            print(f"  Chapter {chapter_num}/{limit}")
+            data = self.fetch_text(book_name, chapter_num)
+            if not data or "he" not in data or "text" not in data:
+                print(f"  ⚠ Skipping {book_name} {chapter_num}: missing text")
+                continue
+
+            hebrew_verses = self._clean_verses(data["he"])
+            english_verses = self._clean_verses(data["text"])
+            anchor = f"{book_name.lower().replace('_', '-')}-chapter-{chapter_num}"
+
+            sections.append(
+                f'''        <section class="chapter-container" id="{anchor}" epub:type="chapter">
+            <div class="chapter-header">
+                <h1>{html.escape(book_name)} {chapter_num}</h1>
+                <h2 lang="he" dir="rtl">{html.escape(hebrew_name)} פרק {self.to_hebrew_numeral(chapter_num)}</h2>
+            </div>
+            <div class="verses-container">
+{self._verse_html(hebrew_verses, english_verses)}            </div>
+        </section>
+'''
+            )
+            chapter_links.append(
+                epub.Link(
+                    f"{filename}#{anchor}",
+                    f"{book_name} {chapter_num}",
+                    anchor,
+                )
+            )
+
+        item.content = f'''<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="he">
+<head>
+    <meta charset="utf-8" />
+    <title>{html.escape(book_name)} - {html.escape(hebrew_name)}</title>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+</head>
+<body>
+    <main>
+{''.join(sections)}    </main>
 </body>
 </html>
-"""
-
-        chapter.content = html
-        return chapter
+'''
+        item.add_item(css)
+        return item, chapter_links
 
     @staticmethod
     def to_hebrew_numeral(num: int) -> str:
@@ -226,16 +280,22 @@ class TanakhGenerator:
         Artwork policy:
         - The cover is kept when images/chagall_moses_tablets_cover.jpg exists.
         - No other image is embedded, referenced, or added to the TOC/spine.
+
+        Kindle policy:
+        - One XHTML file is generated per biblical book, not per chapter.
+        - Chapter anchors are linked from the generated EPUB TOC/NCX.
         """
         print("=" * 60)
         print("Tanakh EPUB Generator")
-        print("Text-only edition + optional cover")
+        print("Kindle-friendly reflowable edition")
+        print("Text-only interior + optional cover")
         print("=" * 60)
 
         book = epub.EpubBook()
-        book.set_identifier("tanakh-kobo-2024")
+        book.set_identifier("tanakh-hebrew-english-2026")
         book.set_title("Tanakh - Hebrew Bible")
         book.set_language("he")
+        book.add_metadata("DC", "language", "en")
         book.add_author("Sefaria.org")
 
         # Keep only the cover artwork.
@@ -305,44 +365,41 @@ class TanakhGenerator:
         spine = ["nav", dedication]
         toc = [dedication]
 
-        books_to_process = self.books
         if test2_mode:
             books_to_process = self.books[:3]
+            test_limit = 3
             print("TEST2 MODE: first 3 books, first 3 chapters each")
         elif test_mode:
+            books_to_process = self.books
+            test_limit = 3
             print("TEST MODE: first 3 chapters of every book")
+        else:
+            books_to_process = self.books
+            test_limit = None
 
         for english_name, hebrew_name, transliteration, chapter_count in books_to_process:
-            if test_mode or test2_mode:
-                chapter_count = min(3, chapter_count)
-
             print(f"Processing {english_name}...")
-            book_chapters = []
+            book_item, chapter_links = self.create_book_content(
+                english_name,
+                hebrew_name,
+                chapter_count,
+                css,
+                test_limit,
+            )
 
-            # Deliberately no book-intro image/page. Every book starts with its text.
-            for chapter_num in range(1, chapter_count + 1):
-                chapter = self.create_chapter_responsive(
-                    english_name,
-                    hebrew_name,
-                    chapter_num,
-                    chapter_count,
-                )
-                if chapter:
-                    chapter.add_item(css)
-                    book.add_item(chapter)
-                    spine.append(chapter)
-                    book_chapters.append(chapter)
-
-            if book_chapters:
+            if chapter_links:
+                book.add_item(book_item)
+                spine.append(book_item)
                 toc.append(
                     (
                         epub.Section(f"{english_name} - {hebrew_name}"),
-                        book_chapters,
+                        chapter_links,
                     )
                 )
 
-        # Navigation is generated from the actual spine/TOC. There is no
-        # illustration index and no artwork attribution page in this edition.
+        # EbookLib generates both EPUB 3 navigation and the NCX used by Kindle
+        # navigation. The TOC contains direct chapter-anchor links even though
+        # chapters are grouped into one XHTML file per biblical book.
         book.toc = toc
         book.spine = spine
         book.add_item(epub.EpubNcx())
