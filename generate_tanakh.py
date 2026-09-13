@@ -9,6 +9,7 @@ The output is deliberately reflowable and Kindle-friendly:
 - one XHTML content file per biblical book, keeping the full edition below
   Amazon's 300-HTML-file limit;
 - Hebrew and English remain separately directional inside each chapter;
+- optional Rashi commentary is rendered beneath the corresponding verse;
 - chapters are linked from the EPUB navigation/NCX;
 - only the cover image is embedded;
 - no interior artwork, illustration index, or attribution page is generated.
@@ -28,7 +29,8 @@ from ebooklib import epub
 class TanakhGenerator:
     """Build a complete Hebrew/English Tanakh EPUB."""
 
-    def __init__(self):
+    def __init__(self, include_rashi: bool = False):
+        self.include_rashi = include_rashi
         self.books = [
             # TORAH
             ("Genesis", "בראשית", "Bereshit", 50),
@@ -107,6 +109,28 @@ class TanakhGenerator:
             line-height: 1.7;
             margin-bottom: 1em;
         }
+        .rashi-commentary {
+            margin: 0.25em 0 1.25em;
+            padding: 0.6em 0.8em;
+            border-left: 2px solid #bbb;
+            font-size: 0.92em;
+            line-height: 1.6;
+        }
+        .rashi-label {
+            font-weight: bold;
+            font-size: 0.85em;
+            margin-bottom: 0.25em;
+        }
+        .rashi-hebrew {
+            direction: rtl;
+            text-align: right;
+            font-family: "NotoSerifHebrew", serif;
+            margin-bottom: 0.45em;
+        }
+        .rashi-english {
+            direction: ltr;
+            text-align: left;
+        }
         .verse-number { font-size: 0.85em; margin: 0 0.5em; }
         """
 
@@ -152,11 +176,81 @@ class TanakhGenerator:
                     time.sleep(2)
         return {}
 
+    def fetch_rashi(self, book: str, chapter: int) -> Dict[int, list[dict[str, str]]]:
+        """Fetch Rashi comments linked to each verse of a chapter.
+
+        Sefaria's Links API returns commentary links for a base-text chapter.
+        We keep only links whose commentator is Rashi and group them by the
+        anchor verse number. Each verse may have multiple Rashi comments.
+        """
+        url = f"https://www.sefaria.org/api/links/{book}.{chapter}"
+        params = {
+            "with_text": 1,
+            "category": "Commentary",
+        }
+
+        for attempt in range(3):
+            try:
+                response = requests.get(url, params=params, timeout=30)
+                response.raise_for_status()
+                links = response.json()
+                break
+            except (requests.RequestException, ValueError) as exc:
+                if attempt == 2:
+                    print(f"  ⚠ Failed to fetch Rashi for {book} {chapter}: {exc}")
+                    return {}
+                time.sleep(2)
+        else:
+            return {}
+
+        grouped: Dict[int, list[dict[str, str]]] = {}
+        for link in links if isinstance(links, list) else []:
+            if link.get("commentator") != "Rashi":
+                continue
+
+            anchor_verse = link.get("anchorVerse")
+            if not isinstance(anchor_verse, int):
+                anchor_ref = str(link.get("anchorRef", ""))
+                match = re.search(r"\.(\d+)$", anchor_ref)
+                if not match:
+                    match = re.search(r":(\d+)$", anchor_ref)
+                if not match:
+                    continue
+                anchor_verse = int(match.group(1))
+
+            hebrew = self._clean_rashi_text(link.get("he", ""))
+            english = self._clean_rashi_text(link.get("text", ""))
+            if not hebrew and not english:
+                continue
+
+            grouped.setdefault(anchor_verse, []).append(
+                {
+                    "hebrew": hebrew,
+                    "english": english,
+                }
+            )
+
+        return grouped
+
     @staticmethod
-    def _verse_html(hebrew_verses: list[str], english_verses: list[str]) -> str:
-        """Render paired Hebrew/English verses as safe XHTML fragments."""
+    def _clean_rashi_text(value) -> str:
+        """Clean one Rashi comment while preserving its actual text."""
+        if not isinstance(value, str):
+            return ""
+        clean = re.sub(r"<[^>]+>", "", value)
+        clean = re.sub(r"\s+", " ", clean).strip()
+        return clean
+
+    @staticmethod
+    def _verse_html(
+        hebrew_verses: list[str],
+        english_verses: list[str],
+        rashi_by_verse: Dict[int, list[dict[str, str]]] | None = None,
+    ) -> str:
+        """Render paired Hebrew/English verses and optional Rashi commentary."""
         parts = []
         max_verses = max(len(hebrew_verses), len(english_verses))
+        rashi_by_verse = rashi_by_verse or {}
 
         for index in range(max_verses):
             verse_number = index + 1
@@ -174,6 +268,26 @@ class TanakhGenerator:
             </div>
 '''
                 )
+
+            for comment in rashi_by_verse.get(verse_number, []):
+                hebrew = comment.get("hebrew", "")
+                english = comment.get("english", "")
+                if not hebrew and not english:
+                    continue
+                parts.append('''            <div class="rashi-commentary">
+                <div class="rashi-label">Rashi</div>
+''')
+                if hebrew:
+                    parts.append(
+                        f'''                <div class="rashi-hebrew" dir="rtl">{html.escape(hebrew)}</div>
+'''
+                    )
+                if english:
+                    parts.append(
+                        f'''                <div class="rashi-english" dir="ltr">{html.escape(english)}</div>
+'''
+                    )
+                parts.append("            </div>\n")
 
         return "".join(parts)
 
@@ -206,6 +320,13 @@ class TanakhGenerator:
 
             hebrew_verses = self._clean_verses(data["he"])
             english_verses = self._clean_verses(data["text"])
+            rashi_by_verse = {}
+            if self.include_rashi:
+                rashi_by_verse = self.fetch_rashi(book_name, chapter_num)
+                rashi_count = sum(len(comments) for comments in rashi_by_verse.values())
+                if rashi_count:
+                    print(f"    Rashi: {rashi_count} comments")
+
             anchor = f"{book_name.lower().replace('_', '-')}-chapter-{chapter_num}"
 
             sections.append(
@@ -215,7 +336,7 @@ class TanakhGenerator:
                 <h2 lang="he" dir="rtl">{html.escape(hebrew_name)} פרק {self.to_hebrew_numeral(chapter_num)}</h2>
             </div>
             <div class="verses-container">
-{self._verse_html(hebrew_verses, english_verses)}            </div>
+{self._verse_html(hebrew_verses, english_verses, rashi_by_verse)}            </div>
         </section>
 '''
             )
@@ -278,7 +399,7 @@ class TanakhGenerator:
         """Generate the complete Tanakh EPUB.
 
         Artwork policy:
-        - The cover is kept when images/chagall_moses_tablets_cover.jpg exists.
+        - The PNG cover is kept when images/chagall_moses_tablets_cover.png exists.
         - No other image is embedded, referenced, or added to the TOC/spine.
 
         Kindle policy:
@@ -288,23 +409,29 @@ class TanakhGenerator:
         print("=" * 60)
         print("Tanakh EPUB Generator")
         print("Kindle-friendly reflowable edition")
-        print("Text-only interior + optional cover")
+        print("Text-only interior + PNG cover")
+        if self.include_rashi:
+            print("Rashi commentary: enabled")
         print("=" * 60)
 
         book = epub.EpubBook()
-        book.set_identifier("tanakh-hebrew-english-2026")
-        book.set_title("Tanakh - Hebrew Bible")
+        if self.include_rashi:
+            book.set_identifier("tanakh-hebrew-english-rashi-2026")
+            book.set_title("Tanakh - Hebrew Bible with Rashi")
+        else:
+            book.set_identifier("tanakh-hebrew-english-2026")
+            book.set_title("Tanakh - Hebrew Bible")
         book.set_language("he")
         book.add_metadata("DC", "language", "en")
         book.add_author("Sefaria.org")
 
         # Keep only the cover artwork.
-        cover_path = Path("images/chagall_moses_tablets_cover.jpg")
+        cover_path = Path("images/chagall_moses_tablets_cover.png")
         if cover_path.exists():
-            book.set_cover("cover.jpg", cover_path.read_bytes())
-            print("  ✓ Added cover image")
+            book.set_cover("cover.png", cover_path.read_bytes())
+            print("  ✓ Added PNG cover image")
         else:
-            print("  • No cover image found; continuing without a cover")
+            print("  • No PNG cover image found; continuing without a cover")
 
         css = epub.EpubItem(
             uid="style",
@@ -419,9 +546,14 @@ def main():
         action="store_true",
         help="Generate only the first 3 books and 3 chapters each",
     )
+    parser.add_argument(
+        "--rashi",
+        action="store_true",
+        help="Include Rashi commentary beneath the corresponding verses",
+    )
     args = parser.parse_args()
 
-    TanakhGenerator().generate(args.output, args.test, args.test2)
+    TanakhGenerator(include_rashi=args.rashi).generate(args.output, args.test, args.test2)
 
 
 if __name__ == "__main__":
