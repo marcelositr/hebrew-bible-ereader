@@ -180,46 +180,74 @@ class TanakhGenerator:
         """Fetch Rashi comments linked to each verse of a chapter.
 
         Sefaria's Links API returns commentary links for a base-text chapter.
-        We keep only links whose commentator is Rashi and group them by the
-        anchor verse number. Each verse may have multiple Rashi comments.
+        We keep only links whose collective title is Rashi and group them
+        by the anchor verse number. Each verse may have multiple comments.
         """
         url = f"https://www.sefaria.org/api/links/{book}.{chapter}"
         params = {
             "with_text": 1,
             "category": "Commentary",
         }
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 Chrome/145 Safari/537.36"
+            ),
+            "Accept": "application/json",
+        }
 
         for attempt in range(3):
             try:
-                response = requests.get(url, params=params, timeout=30)
+                response = requests.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=30,
+                )
                 response.raise_for_status()
                 links = response.json()
                 break
             except (requests.RequestException, ValueError) as exc:
                 if attempt == 2:
-                    print(f"  ⚠ Failed to fetch Rashi for {book} {chapter}: {exc}")
+                    print(
+                        f"  ⚠ Failed to fetch Rashi for "
+                        f"{book} {chapter}: {exc}"
+                    )
                     return {}
                 time.sleep(2)
         else:
             return {}
 
         grouped: Dict[int, list[dict[str, str]]] = {}
+
         for link in links if isinstance(links, list) else []:
-            if link.get("commentator") != "Rashi":
+            if not isinstance(link, dict):
+                continue
+
+            collective = link.get("collectiveTitle")
+            if not isinstance(collective, dict):
+                continue
+
+            if collective.get("en") != "Rashi":
                 continue
 
             anchor_verse = link.get("anchorVerse")
+
             if not isinstance(anchor_verse, int):
                 anchor_ref = str(link.get("anchorRef", ""))
+
                 match = re.search(r"\.(\d+)$", anchor_ref)
                 if not match:
                     match = re.search(r":(\d+)$", anchor_ref)
+
                 if not match:
                     continue
+
                 anchor_verse = int(match.group(1))
 
             hebrew = self._clean_rashi_text(link.get("he", ""))
             english = self._clean_rashi_text(link.get("text", ""))
+
             if not hebrew and not english:
                 continue
 
@@ -231,6 +259,7 @@ class TanakhGenerator:
             )
 
         return grouped
+
 
     @staticmethod
     def _clean_rashi_text(value) -> str:
